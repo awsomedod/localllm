@@ -87,6 +87,14 @@ def transform_member(member, congress: int):
     }
 
 
-detail = get_member_detail("J000032")
-transformed = transform_member(detail, 118)
-print(json.dumps(transformed, indent=2))
+def get_transformed_members_by_congress(congress: int):
+    members = []
+    for member in get_members_by_congress(congress):
+        detail = get_member_detail(member["bioguideId"])
+        members.append(transform_member(detail, congress))
+    return members
+
+
+transformed_members = get_transformed_members_by_congress(118)
+print(len(transformed_members))
+print(json.dumps(transformed_members[0], indent=2))
