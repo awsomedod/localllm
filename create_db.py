@@ -23,28 +23,23 @@ CREATE TABLE IF NOT EXISTS congress_members (
     district INTEGER,
     image_url TEXT
 );
+
 CREATE TABLE IF NOT EXISTS house_votes (
-    chamber TEXT NOT NULL,
-    congress INTEGER NOT NULL,
-    session INTEGER NOT NULL,
-    roll_call INTEGER NOT NULL,
-    legislation_type TEXT,
+    vote_id INTEGER PRIMARY KEY,
+    congress INTEGER,
     legislation_number TEXT,
+    legislation_type TEXT,
+    legislation_url TEXT,
     result TEXT,
-    vote_type TEXT,
+    roll_call_number INTEGER,
+    session_number INTEGER,
+    source_data_url TEXT,
     start_date TEXT,
-    source_url TEXT,
-    PRIMARY KEY (chamber, congress, session, roll_call)
+    update_date TEXT,
+    url TEXT,
+    vote_type TEXT
 );
-CREATE TABLE IF NOT EXISTS vote_positions (
-    chamber TEXT NOT NULL,
-    congress INTEGER NOT NULL,
-    session INTEGER NOT NULL,
-    roll_call INTEGER NOT NULL,
-    bioguide_id TEXT NOT NULL,
-    vote_cast TEXT,
-    PRIMARY KEY (chamber, congress, session, roll_call, bioguide_id)
-);
+
 """)
 conn.commit()
 conn.close()
