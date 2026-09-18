@@ -140,5 +140,5 @@ def get_house_votes_with_details(votes):
 
 house_votes = get_house_votes(119, max_votes=3)
 house_votes_with_details = get_house_votes_with_details(house_votes)
-print(json.dumps(house_votes_with_details[0]["text"], indent=4))
+print(house_votes_with_details[0].keys())
 print(len(house_votes_with_details), "votes with details")

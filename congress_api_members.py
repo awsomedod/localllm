@@ -97,4 +97,4 @@ def get_transformed_members_by_congress(congress: int):
 
 transformed_members = get_transformed_members_by_congress(118)
 print(len(transformed_members))
-print(json.dumps(transformed_members[0], indent=2))
+print(transformed_members[0].keys())
