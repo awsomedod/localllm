@@ -1,89 +1,173 @@
-from sqlalchemy import create_engine, inspect, select, text
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import BigInteger, Integer, JSON, String, create_engine, insert, select, update, delete, func
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
-from db_models import Base
+
+class Base(DeclarativeBase):
+    pass
+
+
+class Member(Base):
+    __tablename__ = "house_members"
+
+    bioguide_id: Mapped[str] = mapped_column(String, primary_key=True)
+    congress: Mapped[int] = mapped_column(Integer, primary_key=True)
+    birthYear: Mapped[str | None] = mapped_column(String)
+    deathYear: Mapped[str | None] = mapped_column(String)
+    cosponsoredLegislationCount: Mapped[int | None] = mapped_column(Integer)
+    sponsoredLegislationCount: Mapped[int | None] = mapped_column(Integer)
+    image_url: Mapped[str | None] = mapped_column(String)
+    name: Mapped[str | None] = mapped_column(String)
+    firstName: Mapped[str | None] = mapped_column(String)
+    lastName: Mapped[str | None] = mapped_column(String)
+    honorificName: Mapped[str | None] = mapped_column(String)
+    party: Mapped[str | None] = mapped_column(String)
+    chamber: Mapped[str | None] = mapped_column(String)
+    district: Mapped[int | None] = mapped_column(Integer)
+    endYear: Mapped[int | None] = mapped_column(Integer)
+    memberType: Mapped[str | None] = mapped_column(String)
+    startYear: Mapped[int | None] = mapped_column(Integer)
+    stateCode: Mapped[str | None] = mapped_column(String)
+    stateName: Mapped[str | None] = mapped_column(String)
+
+
+class HouseVote(Base):
+    __tablename__ = "house_votes"
+
+    identifier: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    congress: Mapped[int] = mapped_column(Integer)
+    legislationNumber: Mapped[str | None] = mapped_column(String)
+    legislationType: Mapped[str | None] = mapped_column(String)
+    legislationUrl: Mapped[str | None] = mapped_column(String)
+    result: Mapped[str | None] = mapped_column(String)
+    rollCallNumber: Mapped[int] = mapped_column(Integer)
+    sessionNumber: Mapped[int] = mapped_column(Integer)
+    sourceDataURL: Mapped[str | None] = mapped_column(String)
+    startDate: Mapped[str | None] = mapped_column(String)
+    updateDate: Mapped[str | None] = mapped_column(String)
+    url: Mapped[str | None] = mapped_column(String)
+    voteType: Mapped[str | None] = mapped_column(String)
+    positions: Mapped[list | None] = mapped_column(JSON)
+    text: Mapped[dict | None] = mapped_column(JSON)
+
 
 engine = create_engine("sqlite:///congress.db")
-Session = sessionmaker(bind=engine, expire_on_commit=False)
+SessionLocal = sessionmaker(bind=engine)
 
 
-def create_row(model, **values):
-    with Session() as session:
-        row = model(**values)
-        session.add(row)
-        session.commit()
-        return row
-
-
-def get_row(model, pk):
-    with Session() as session:
-        return session.get(model, pk)
-
-
-def list_rows(model, **filters):
-    with Session() as session:
-        stmt = select(model)
-        for key, value in filters.items():
-            if value is not None:
-                stmt = stmt.where(getattr(model, key) == value)
-        return list(session.scalars(stmt).all())
-
-
-def edit_row(model, pk, **values):
-    with Session() as session:
-        row = session.get(model, pk)
-        if row is None:
-            raise KeyError(f"{model.__name__} {pk!r} not found")
-        for key, value in values.items():
-            setattr(row, key, value)
-        session.commit()
-        return row
-
-
-def delete_row(model, pk):
-    with Session() as session:
-        row = session.get(model, pk)
-        if row is None:
-            raise KeyError(f"{model.__name__} {pk!r} not found")
-        session.delete(row)
-        session.commit()
-
-
-def _model_type_name(column):
-    return str(column.type.compile(dialect=engine.dialect))
-
-
-def sync_schema():
-    inspector = inspect(engine)
-    existing_tables = set(inspector.get_table_names())
+def init_db():
     Base.metadata.create_all(engine)
 
-    with engine.begin() as conn:
-        conn.execute(text("PRAGMA foreign_keys = OFF"))
-        inspector = inspect(conn)
-        for table in Base.metadata.sorted_tables:
-            if table.name not in existing_tables:
-                continue
 
-            db_columns = {column["name"]: column for column in inspector.get_columns(table.name)}
-            model_columns = {column.name: column for column in table.columns}
-            added = [name for name in model_columns if name not in db_columns]
-            removed = [name for name in db_columns if name not in model_columns]
-
-            for name in added:
-                column = model_columns[name]
-                type_sql = _model_type_name(column)
-                conn.execute(text(
-                    f"ALTER TABLE {table.name} ADD COLUMN {name} {type_sql}"
-                ))
-                db_columns[name] = {"name": name, "type": type_sql}
-
-            for name in removed:
-                conn.execute(text(
-                    f"ALTER TABLE {table.name} DROP COLUMN {name}"
-                ))
-                db_columns.pop(name, None)
-                
-        conn.execute(text("PRAGMA foreign_keys = ON"))
+def create_members(members: list[dict]):
+    if not members:
+        return
+    with SessionLocal() as session:
+        session.execute(insert(Member), members)
+        session.commit()
 
 
+def create_house_votes(house_votes: list[dict]):
+    if not house_votes:
+        return
+    with SessionLocal() as session:
+        session.execute(insert(HouseVote), house_votes)
+        session.commit()
+
+def get_member(bioguide_id: str, congress: int) -> dict | None:
+    with SessionLocal() as session:
+        row = session.execute(
+            select(Member.__table__).where(
+                Member.bioguide_id == bioguide_id,
+                Member.congress == congress,
+            )
+        ).mappings().first()
+        return dict(row) if row else None
+
+def get_house_vote(identifier: int) -> dict | None:
+    with SessionLocal() as session:
+        row = session.execute(
+            select(HouseVote.__table__).where(
+                HouseVote.identifier == identifier,
+            )
+        ).mappings().first()
+        return dict(row) if row else None
+
+def edit_member(bioguide_id: str, congress: int, fields: dict) -> dict | None:
+    if not fields:
+        return get_member(bioguide_id, congress)
+    with SessionLocal() as session:
+        row = session.execute(
+            update(Member)
+            .where(Member.bioguide_id == bioguide_id, Member.congress == congress)
+            .values(**fields)
+            .returning(*Member.__table__.columns)
+        ).mappings().first()
+        session.commit()
+        return dict(row) if row else None
+
+def edit_house_vote(identifier: int, fields: dict) -> dict | None:
+    if not fields:
+        return get_house_vote(identifier)
+    with SessionLocal() as session:
+        row = session.execute(
+            update(HouseVote)
+            .where(HouseVote.identifier == identifier)
+            .values(**fields)
+            .returning(*HouseVote.__table__.columns)
+        ).mappings().first()
+        session.commit()
+        return dict(row) if row else None
+
+
+def delete_member(bioguide_id: str, congress: int) -> bool:
+    with SessionLocal() as session:
+        result = session.execute(
+            delete(Member).where(
+                Member.bioguide_id == bioguide_id,
+                Member.congress == congress,
+            )
+        )
+        session.commit()
+        return result.rowcount > 0
+
+
+def delete_house_vote(identifier: int) -> bool:
+    with SessionLocal() as session:
+        result = session.execute(
+            delete(HouseVote).where(
+                HouseVote.identifier == identifier,
+            )
+        )
+        session.commit()
+        return result.rowcount > 0
+
+
+def list_members(congress=None, offset=0, limit=20):
+    with SessionLocal() as session:
+        stmt = select(Member.__table__)
+        count_stmt = select(func.count()).select_from(Member.__table__)
+        if congress is not None:
+            stmt = stmt.where(Member.congress == congress)
+            count_stmt = count_stmt.where(Member.congress == congress)
+        total = session.scalar(count_stmt)
+        rows = session.execute(
+            stmt.order_by(Member.lastName, Member.bioguide_id)
+            .offset(offset)
+            .limit(limit)
+            ).mappings().all()
+        return [dict(row) for row in rows], total
+
+def list_house_votes(congress=None, offset=0, limit=20):
+    with SessionLocal() as session:
+        stmt = select(HouseVote.__table__)
+        count_stmt = select(func.count()).select_from(HouseVote.__table__)
+        if congress is not None:
+            stmt = stmt.where(HouseVote.congress == congress)
+            count_stmt = count_stmt.where(HouseVote.congress == congress)
+        total = session.scalar(count_stmt)
+        rows = session.execute(
+            stmt.order_by(HouseVote.startDate, HouseVote.rollCallNumber, HouseVote.identifier)
+            .offset(offset)
+            .limit(limit)
+            ).mappings().all()
+        return [dict(row) for row in rows], total

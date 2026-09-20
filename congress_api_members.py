@@ -10,6 +10,7 @@ def get_members_by_congress(congress: int):
     members = []
     offset = 0
     while True:
+        print(f"Fetching members for congress {congress} with offset {offset}")
         params = {
             "api_key": os.getenv("CONGRESS_API_KEY"),
             "format": "json",
@@ -65,7 +66,9 @@ def party_for_congress(member, congress: int):
             return spell.get("partyName")
     return None
 
-def transform_member(member, congress: int):
+def transform_member(member, congress: int, count: int):
+    count += 1
+    print(f"Transforming member {member.get('bioguideId')} count: {count}")
     depiction = member.get("depiction") or {}
     cosponsored_legislation = member.get("cosponsoredLegislation") or {}
     sponsored_legislation = member.get("sponsoredLegislation") or {}
@@ -89,12 +92,9 @@ def transform_member(member, congress: int):
 
 def get_transformed_members_by_congress(congress: int):
     members = []
+    count = 0
     for member in get_members_by_congress(congress):
         detail = get_member_detail(member["bioguideId"])
-        members.append(transform_member(detail, congress))
+        members.append(transform_member(detail, congress, count))
     return members
 
-
-transformed_members = get_transformed_members_by_congress(118)
-print(len(transformed_members))
-print(transformed_members[0].keys())

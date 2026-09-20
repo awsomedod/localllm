@@ -13,6 +13,7 @@ def get_house_votes(congress: int, max_votes=None):
     votes = []
     offset = 0
     while True:
+        print(f"Fetching votes for congress {congress} with offset {offset}")
         # 250 is the API's ceiling, but ask for less when only a sample is wanted.
         page_size = 250 if max_votes is None else min(250, max_votes - len(votes))
         params = {
@@ -109,9 +110,11 @@ def get_legislation_text(congress: int, legislation_type: str, legislation_numbe
     }
 
 
-def get_house_votes_with_details(votes):
+def get_house_votes_with_details(votes, count: int):
     text_cache = {}
     for vote in votes:
+        count += 1
+        print(f"Getting vote positions for vote {count}")
         vote["positions"] = get_vote_positions(
             vote["congress"],
             vote["sessionNumber"],
@@ -137,8 +140,7 @@ def get_house_votes_with_details(votes):
 
     return votes
 
-
-house_votes = get_house_votes(119, max_votes=3)
-house_votes_with_details = get_house_votes_with_details(house_votes)
-print(house_votes_with_details[0].keys())
-print(len(house_votes_with_details), "votes with details")
+def get_transformed_house_votes_by_congress(congress: int):
+    votes = get_house_votes(congress)
+    count = 0
+    return get_house_votes_with_details(votes, count)
