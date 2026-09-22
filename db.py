@@ -1,4 +1,4 @@
-from sqlalchemy import BigInteger, Integer, JSON, String, create_engine, insert, select, update, delete, func
+from sqlalchemy import BigInteger, Integer, JSON, String, Text, create_engine, insert, select, update, delete, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
@@ -48,6 +48,7 @@ class HouseVote(Base):
     voteType: Mapped[str | None] = mapped_column(String)
     positions: Mapped[list | None] = mapped_column(JSON)
     text: Mapped[dict | None] = mapped_column(JSON)
+    summary: Mapped[str | None] = mapped_column(Text)
 
 
 engine = create_engine("sqlite:///congress.db")
@@ -83,6 +84,28 @@ def get_member(bioguide_id: str, congress: int) -> dict | None:
         ).mappings().first()
         return dict(row) if row else None
 
+def named_positions(session, congress: int, positions: list | None) -> list | None:
+    if not positions:
+        return positions
+    bioguide_ids = {
+        position["bioguide_id"]
+        for position in positions
+        if position.get("bioguide_id")
+    }
+    names = dict(
+        session.execute(
+            select(Member.bioguide_id, Member.name).where(
+                Member.congress == congress,
+                Member.bioguide_id.in_(bioguide_ids),
+            )
+        ).all()
+    )
+    return [
+        {**position, "name": names.get(position.get("bioguide_id"))}
+        for position in positions
+    ]
+
+
 def get_house_vote(identifier: int) -> dict | None:
     with SessionLocal() as session:
         row = session.execute(
@@ -90,7 +113,27 @@ def get_house_vote(identifier: int) -> dict | None:
                 HouseVote.identifier == identifier,
             )
         ).mappings().first()
-        return dict(row) if row else None
+        if row is None:
+            return None
+        vote = dict(row)
+        vote["positions"] = named_positions(session, vote["congress"], vote["positions"])
+        return vote
+
+
+def set_house_vote_summary(identifier: int, summary: str) -> dict | None:
+    with SessionLocal() as session:
+        row = session.execute(
+            update(HouseVote)
+            .where(HouseVote.identifier == identifier)
+            .values(summary=summary)
+            .returning(*HouseVote.__table__.columns)
+        ).mappings().first()
+        session.commit()
+        if row is None:
+            return None
+        vote = dict(row)
+        vote["positions"] = named_positions(session, vote["congress"], vote["positions"])
+        return vote
 
 def edit_member(bioguide_id: str, congress: int, fields: dict) -> dict | None:
     if not fields:
@@ -158,8 +201,12 @@ def list_members(congress=None, offset=0, limit=20):
         return [dict(row) for row in rows], total
 
 def list_house_votes(congress=None, offset=0, limit=20):
+    list_columns = [
+        column for column in HouseVote.__table__.columns
+        if column.name not in ("positions", "text")
+    ]
     with SessionLocal() as session:
-        stmt = select(HouseVote.__table__)
+        stmt = select(*list_columns)
         count_stmt = select(func.count()).select_from(HouseVote.__table__)
         if congress is not None:
             stmt = stmt.where(HouseVote.congress == congress)

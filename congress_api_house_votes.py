@@ -1,31 +1,29 @@
-import os
-import re
+import asyncio
 import html
-import requests
-import json
-from dotenv import load_dotenv
-load_dotenv()
+import re
+
+from congress_http import Progress, get_json, get_text
 
 BILL_TYPES = {"HR", "S", "HJRES", "SJRES", "HCONRES", "SCONRES", "HRES", "SRES"}
 
-def get_house_votes(congress: int, max_votes=None):
+async def get_house_votes(client, sem, congress: int, max_votes=None):
     url = f"https://api.congress.gov/v3/house-vote/{congress}"
     votes = []
     offset = 0
     while True:
-        print(f"Fetching votes for congress {congress} with offset {offset}")
+        print(f"Fetching votes for congress {congress} with offset {offset}", flush=True)
         # 250 is the API's ceiling, but ask for less when only a sample is wanted.
         page_size = 250 if max_votes is None else min(250, max_votes - len(votes))
-        params = {
-            "api_key": os.getenv("CONGRESS_API_KEY"),
-            "format": "json",
-            "congress": congress,
-            "limit": page_size,
-            "offset": offset,
-            }
-        response = requests.get(url, params=params, timeout=30)
-        response.raise_for_status()
-        data = response.json()
+        data = await get_json(
+            client,
+            sem,
+            url,
+            {
+                "congress": congress,
+                "limit": page_size,
+                "offset": offset,
+            },
+        )
         votes.extend(data.get("houseRollCallVotes") or [])
         # next is always set while records remain, so a sample has to stop itself.
         reached_max_votes = max_votes is not None and len(votes) >= max_votes
@@ -35,16 +33,9 @@ def get_house_votes(congress: int, max_votes=None):
     return votes
 
 
-def get_vote_positions(congress: int, session_number: int, roll_call_number: int):
+async def get_vote_positions(client, sem, congress: int, session_number: int, roll_call_number: int):
     url = f"https://api.congress.gov/v3/house-vote/{congress}/{session_number}/{roll_call_number}/members"
-    params = {
-        "api_key": os.getenv("CONGRESS_API_KEY"),
-        "format": "json",
-        "limit": 250,
-    }
-    response = requests.get(url, params=params, timeout=30)
-    response.raise_for_status()
-    data = response.json()
+    data = await get_json(client, sem, url, {"limit": 250})
     results = (data.get("houseRollCallVoteMemberVotes") or {}).get("results") or []
     return [
         {
@@ -55,16 +46,11 @@ def get_vote_positions(congress: int, session_number: int, roll_call_number: int
     ]
 
 
-def get_text_versions(congress: int, legislation_type: str, legislation_number: str):
+async def get_text_versions(client, sem, congress: int, legislation_type: str, legislation_number: str):
     bill_type = legislation_type.lower()
     url = f"https://api.congress.gov/v3/bill/{congress}/{bill_type}/{legislation_number}/text"
-    params = {
-        "api_key": os.getenv("CONGRESS_API_KEY"),
-        "format": "json",
-    }
-    response = requests.get(url, params=params, timeout=30)
-    response.raise_for_status()
-    return response.json().get("textVersions")
+    data = await get_json(client, sem, url)
+    return data.get("textVersions")
 
 
 def pick_text_version(text_versions, vote_date=None):
@@ -83,7 +69,7 @@ def pick_text_version(text_versions, vote_date=None):
     return max(candidates, key=lambda pair: ((pair[1].get("date") or ""), pair[0]))[1]
 
 
-def get_full_text(text_version):
+async def get_full_text(client, sem, text_version):
     formats = {item.get("type"): item.get("url") for item in text_version.get("formats") or []}
     source_url = formats.get("Formatted Text")
 
@@ -91,17 +77,16 @@ def get_full_text(text_version):
     package_id = source_url.rsplit("/", 1)[-1].rsplit(".", 1)[0]
     govinfo_url = f"https://www.govinfo.gov/content/pkg/{package_id}/html/{package_id}.htm"
 
-    response = requests.get(govinfo_url, timeout=30)
-    response.raise_for_status()
-    text = html.unescape(re.sub(r"<[^>]+>", "", response.text)).strip()
+    body = await get_text(client, sem, govinfo_url)
+    text = html.unescape(re.sub(r"<[^>]+>", "", body)).strip()
     return package_id, text
 
 
-def get_legislation_text(congress: int, legislation_type: str, legislation_number: str, vote_date):
-    text_versions = get_text_versions(congress, legislation_type, legislation_number)
+async def get_legislation_text(client, sem, congress: int, legislation_type: str, legislation_number: str, vote_date):
+    text_versions = await get_text_versions(client, sem, congress, legislation_type, legislation_number)
     text_version = pick_text_version(text_versions, vote_date)
 
-    package_id, full_text = get_full_text(text_version)
+    package_id, full_text = await get_full_text(client, sem, text_version)
     return {
         "version_type": text_version.get("type"),
         "version_date": text_version.get("date"),
@@ -110,12 +95,35 @@ def get_legislation_text(congress: int, legislation_type: str, legislation_numbe
     }
 
 
-def get_house_votes_with_details(votes, count: int):
+async def get_house_votes_with_details(client, sem, votes):
     text_cache = {}
-    for vote in votes:
-        count += 1
-        print(f"Getting vote positions for vote {count}")
-        vote["positions"] = get_vote_positions(
+    cache_lock = asyncio.Lock()
+
+    async def legislation_text_for(vote, legislation_type, legislation_number):
+        key = (vote["congress"], legislation_type, legislation_number, vote.get("startDate"))
+        async with cache_lock:
+            task = text_cache.get(key)
+            if task is None:
+                task = asyncio.create_task(
+                    get_legislation_text(
+                        client,
+                        sem,
+                        vote["congress"],
+                        legislation_type,
+                        legislation_number,
+                        vote.get("startDate"),
+                    )
+                )
+                text_cache[key] = task
+        return await task
+
+    progress = Progress("Filled vote details", len(votes))
+    print(f"Filling details for {len(votes)} votes", flush=True)
+
+    async def fill_vote(vote):
+        vote["positions"] = await get_vote_positions(
+            client,
+            sem,
             vote["congress"],
             vote["sessionNumber"],
             vote["rollCallNumber"],
@@ -125,22 +133,14 @@ def get_house_votes_with_details(votes, count: int):
         legislation_number = vote.get("legislationNumber")
         if legislation_type not in BILL_TYPES or not legislation_number:
             vote["text"] = None
-            continue
+        else:
+            vote["text"] = await legislation_text_for(vote, legislation_type, legislation_number)
+        await progress.tick()
 
-        # The vote date decides which version is picked, so it belongs in the key.
-        key = (vote["congress"], legislation_type, legislation_number, vote.get("startDate"))
-        if key not in text_cache:
-            text_cache[key] = get_legislation_text(
-                vote["congress"],
-                legislation_type,
-                legislation_number,
-                vote.get("startDate"),
-            )
-        vote["text"] = text_cache[key]
-
+    await asyncio.gather(*(fill_vote(vote) for vote in votes))
     return votes
 
-def get_transformed_house_votes_by_congress(congress: int):
-    votes = get_house_votes(congress)
-    count = 0
-    return get_house_votes_with_details(votes, count)
+
+async def get_transformed_house_votes_by_congress(congress: int, client, sem):
+    votes = await get_house_votes(client, sem, congress)
+    return await get_house_votes_with_details(client, sem, votes)

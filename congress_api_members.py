@@ -1,26 +1,24 @@
-import os
-import requests
-import json
-import pandas as pd
-from dotenv import load_dotenv
-load_dotenv()
+import asyncio
 
-def get_members_by_congress(congress: int):
+from congress_http import Progress, get_json
+
+
+async def get_members_by_congress(client, sem, congress: int):
     url = f"https://api.congress.gov/v3/member/congress/{congress}"
     members = []
     offset = 0
     while True:
-        print(f"Fetching members for congress {congress} with offset {offset}")
-        params = {
-            "api_key": os.getenv("CONGRESS_API_KEY"),
-            "format": "json",
-            "currentMember": "false",
-            "limit": 250,
-            "offset": offset,
-        }
-        response = requests.get(url, params=params, timeout=30)
-        response.raise_for_status()
-        data = response.json()
+        print(f"Fetching members for congress {congress} with offset {offset}", flush=True)
+        data = await get_json(
+            client,
+            sem,
+            url,
+            {
+                "currentMember": "false",
+                "limit": 250,
+                "offset": offset,
+            },
+        )
         members.extend(data.get("members") or [])
         if not data.get("pagination", {}).get("next"):
             break
@@ -28,15 +26,11 @@ def get_members_by_congress(congress: int):
     return members
 
 
-def get_member_detail(bioguide_id: str):
+async def get_member_detail(client, sem, bioguide_id: str):
     url = f"https://api.congress.gov/v3/member/{bioguide_id}"
-    params = {
-        "api_key": os.getenv("CONGRESS_API_KEY"),
-        "format": "json",
-    }
-    response = requests.get(url, params=params, timeout=30)
-    response.raise_for_status()
-    return response.json()["member"]
+    data = await get_json(client, sem, url)
+    return data["member"]
+
 
 def term_for_congress(member, congress: int):
     terms = member.get("terms") or []
@@ -47,9 +41,11 @@ def term_for_congress(member, congress: int):
             return term
     return {}
 
+
 def congress_years(congress: int):
     start_year = 1789 + (congress - 1) * 2  # 118 -> 2023
     return start_year, start_year + 1
+
 
 def party_for_congress(member, congress: int):
     term = term_for_congress(member, congress)
@@ -66,9 +62,9 @@ def party_for_congress(member, congress: int):
             return spell.get("partyName")
     return None
 
+
 def transform_member(member, congress: int, count: int):
-    count += 1
-    print(f"Transforming member {member.get('bioguideId')} count: {count}")
+    print(f"Transforming member {member.get('bioguideId')} count: {count}", flush=True)
     depiction = member.get("depiction") or {}
     cosponsored_legislation = member.get("cosponsoredLegislation") or {}
     sponsored_legislation = member.get("sponsoredLegislation") or {}
@@ -90,11 +86,18 @@ def transform_member(member, congress: int, count: int):
     }
 
 
-def get_transformed_members_by_congress(congress: int):
-    members = []
-    count = 0
-    for member in get_members_by_congress(congress):
-        detail = get_member_detail(member["bioguideId"])
-        members.append(transform_member(detail, congress, count))
-    return members
+async def get_transformed_members_by_congress(congress: int, client, sem):
+    summaries = await get_members_by_congress(client, sem, congress)
+    progress = Progress("Fetched member details", len(summaries))
+    print(f"Fetching details for {len(summaries)} members", flush=True)
 
+    async def fetch_one(member):
+        detail = await get_member_detail(client, sem, member["bioguideId"])
+        await progress.tick()
+        return detail
+
+    details = await asyncio.gather(*(fetch_one(member) for member in summaries))
+    return [
+        transform_member(detail, congress, count)
+        for count, detail in enumerate(details, start=1)
+    ]
